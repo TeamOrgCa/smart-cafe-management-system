@@ -190,7 +190,7 @@ export default function MenuIngredients({ menuItemId }: MenuIngredientsProps) {
             <div className="flex items-end">
               <button
                 onClick={addIngredient}
-                className="bg-forest text-white px-6 py-2 rounded-lg hover:bg-olive transition-colors whitespace-nowrap h-[42px]"
+                className="bg-forest text-white px-6 py-2 rounded-lg hover:bg-olive transition-colors whitespace-nowrap h-10.5"
               >
                 + Add
               </button>

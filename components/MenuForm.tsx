@@ -116,7 +116,7 @@ export default function MenuForm({ menuItem }: MenuFormProps) {
       )}
 
       {!imagePreview && (
-        <div className="relative h-64 bg-gradient-to-br from-olive/20 to-forest/20 rounded-lg flex items-center justify-center">
+        <div className="relative h-64 bg-linear-to-br from-olive/20 to-forest/20 rounded-lg flex items-center justify-center">
           <div className="text-center">
             <div className="text-6xl mb-2">📷</div>
             <p className="text-olive">Image Preview</p>

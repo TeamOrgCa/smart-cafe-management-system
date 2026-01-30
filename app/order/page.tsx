@@ -167,7 +167,7 @@ export default function CustomerOrderPage() {
                           key={item.id}
                           className="bg-white rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow"
                         >
-                          <div className="relative h-32 bg-gradient-to-br from-olive/20 to-forest/20">
+                          <div className="relative h-32 bg-linear-to-br from-olive/20 to-forest/20">
                             {item.image_url ? (
                               <img
                                 src={item.image_url}
