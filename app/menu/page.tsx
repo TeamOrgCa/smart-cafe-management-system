@@ -55,12 +55,6 @@ export default async function MenuPage() {
               >
                 Home
               </Link>
-              <Link
-                href="/login"
-                className="bg-cream text-forest px-4 py-2 rounded-lg hover:bg-cream/90 font-medium transition-colors"
-              >
-                Staff Login
-              </Link>
             </div>
           </div>
         </div>
