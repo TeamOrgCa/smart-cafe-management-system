@@ -18,7 +18,7 @@ export default async function DashboardLayout({
       <Sidebar userRole={profile.role} userName={profile.full_name} />
       
       {/* Main Content */}
-      <main className="flex-1 lg:ml-64">
+      <main className="flex-1 lg:ml-64 pt-16 lg:pt-0">
         <div className="min-h-screen">
           {children}
         </div>

@@ -13,10 +13,10 @@ export default async function DashboardPage() {
   const isAdmin = profile.role === 'admin';
 
   return (
-    <div className="p-8 lg:p-12">
-      <div className="mb-8">
-        <h1 className="text-4xl font-bold text-forest mb-2">Welcome back, {profile.full_name}!</h1>
-        <p className="text-olive text-lg">Here's what's happening in your café today</p>
+    <div className="p-4 sm:p-8 lg:p-12">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-3xl sm:text-4xl font-bold text-forest mb-2">Welcome back, {profile.full_name}!</h1>
+        <p className="text-olive text-base sm:text-lg">Here's what's happening in your café today</p>
       </div>
 
       <main>
