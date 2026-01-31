@@ -12,6 +12,15 @@ interface MenuItem {
   category: string;
   image_url: string | null;
   is_available: boolean;
+  menu_item_ingredients?: Array<{
+    inventory_item_id: string;
+    quantity_needed: number;
+    inventory: {
+      item_name: string;
+      quantity: number;
+      unit: string;
+    };
+  }>;
 }
 
 interface OrderItem {
@@ -19,6 +28,13 @@ interface OrderItem {
   name: string;
   price: number;
   quantity: number;
+}
+
+interface StockWarning {
+  item_name: string;
+  available: number;
+  needed: number;
+  unit: string;
 }
 
 export default function CreateOrderForm({ userId }: { userId: string }) {
@@ -30,6 +46,7 @@ export default function CreateOrderForm({ userId }: { userId: string }) {
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [customerName, setCustomerName] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [stockWarnings, setStockWarnings] = useState<Record<string, StockWarning[]>>({});
 
   useEffect(() => {
     fetchMenuItems();
@@ -38,15 +55,71 @@ export default function CreateOrderForm({ userId }: { userId: string }) {
   const fetchMenuItems = async () => {
     const { data } = await supabase
       .from('menu_items')
-      .select('*')
+      .select(`
+        *,
+        menu_item_ingredients (
+          inventory_item_id,
+          quantity_needed,
+          inventory (
+            item_name,
+            quantity,
+            unit
+          )
+        )
+      `)
       .eq('is_available', true)
       .order('category', { ascending: true });
 
     if (data) setMenuItems(data);
   };
 
+  // Check if menu item has sufficient stock
+  const checkStock = (item: MenuItem, requestedQuantity: number): StockWarning[] => {
+    const warnings: StockWarning[] = [];
+    
+    if (!item.menu_item_ingredients || item.menu_item_ingredients.length === 0) {
+      return warnings;
+    }
+
+    item.menu_item_ingredients.forEach((ingredient) => {
+      const needed = ingredient.quantity_needed * requestedQuantity;
+      const available = ingredient.inventory.quantity;
+      
+      if (available < needed) {
+        warnings.push({
+          item_name: ingredient.inventory.item_name,
+          available,
+          needed,
+          unit: ingredient.inventory.unit
+        });
+      }
+    });
+
+    return warnings;
+  };
+
+  // Check if menu item is out of stock
+  const isOutOfStock = (item: MenuItem): boolean => {
+    if (!item.menu_item_ingredients || item.menu_item_ingredients.length === 0) {
+      return false;
+    }
+
+    return item.menu_item_ingredients.some(
+      (ingredient) => ingredient.inventory.quantity === 0
+    );
+  };
+
   const addItemToOrder = (item: MenuItem) => {
     const existingItem = orderItems.find(oi => oi.menu_item_id === item.id);
+    const newQuantity = existingItem ? existingItem.quantity + 1 : 1;
+    
+    // Check stock availability
+    const warnings = checkStock(item, newQuantity);
+    
+    if (warnings.length > 0) {
+      setStockWarnings({ ...stockWarnings, [item.id]: warnings });
+      return; // Don't add if stock insufficient
+    }
     
     if (existingItem) {
       setOrderItems(orderItems.map(oi =>
@@ -62,12 +135,33 @@ export default function CreateOrderForm({ userId }: { userId: string }) {
         quantity: 1,
       }]);
     }
+    
+    // Clear warnings for this item
+    const newWarnings = { ...stockWarnings };
+    delete newWarnings[item.id];
+    setStockWarnings(newWarnings);
   };
 
   const updateQuantity = (menu_item_id: string, quantity: number) => {
     if (quantity <= 0) {
       removeItem(menu_item_id);
     } else {
+      // Find menu item and check stock
+      const menuItem = menuItems.find(mi => mi.id === menu_item_id);
+      if (menuItem) {
+        const warnings = checkStock(menuItem, quantity);
+        
+        if (warnings.length > 0) {
+          setStockWarnings({ ...stockWarnings, [menu_item_id]: warnings });
+          return; // Don't update if stock insufficient
+        } else {
+          // Clear warnings for this item
+          const newWarnings = { ...stockWarnings };
+          delete newWarnings[menu_item_id];
+          setStockWarnings(newWarnings);
+        }
+      }
+      
       setOrderItems(orderItems.map(oi =>
         oi.menu_item_id === menu_item_id ? { ...oi, quantity } : oi
       ));
@@ -76,6 +170,10 @@ export default function CreateOrderForm({ userId }: { userId: string }) {
 
   const removeItem = (menu_item_id: string) => {
     setOrderItems(orderItems.filter(oi => oi.menu_item_id !== menu_item_id));
+    // Clear warnings
+    const newWarnings = { ...stockWarnings };
+    delete newWarnings[menu_item_id];
+    setStockWarnings(newWarnings);
   };
 
   const calculateTotal = () => {
@@ -175,22 +273,56 @@ export default function CreateOrderForm({ userId }: { userId: string }) {
                 {category}
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {items.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => addItemToOrder(item)}
-                    className="bg-white p-4 rounded-lg shadow hover:shadow-lg transition-all border-2 border-transparent hover:border-forest text-left"
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <h4 className="font-semibold text-forest">{item.name}</h4>
-                      <span className="text-forest font-bold">₱{item.price.toFixed(2)}</span>
+                {items.map((item) => {
+                  const outOfStock = isOutOfStock(item);
+                  const warnings = stockWarnings[item.id];
+                  
+                  return (
+                    <div key={item.id} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => addItemToOrder(item)}
+                        disabled={outOfStock}
+                        className={`w-full bg-white p-4 rounded-lg shadow hover:shadow-lg transition-all border-2 text-left ${
+                          outOfStock 
+                            ? 'border-red-300 opacity-60 cursor-not-allowed' 
+                            : warnings
+                            ? 'border-yellow-300'
+                            : 'border-transparent hover:border-forest'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="font-semibold text-forest">{item.name}</h4>
+                          <span className="text-forest font-bold">₱{item.price.toFixed(2)}</span>
+                        </div>
+                        {item.description && (
+                          <p className="text-sm text-gray-600 line-clamp-2">{item.description}</p>
+                        )}
+                      </button>
+                      
+                      {/* Out of Stock Badge */}
+                      {outOfStock && (
+                        <div className="absolute top-2 right-2 bg-red-600 text-white text-xs font-bold px-2 py-1 rounded">
+                          OUT OF STOCK
+                        </div>
+                      )}
+                      
+                      {/* Stock Warning */}
+                      {warnings && warnings.length > 0 && !outOfStock && (
+                        <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs">
+                          <p className="text-yellow-800 font-semibold">⚠️ Insufficient Stock:</p>
+                          <ul className="mt-1 space-y-1">
+                            {warnings.map((warning, idx) => (
+                              <li key={idx} className="text-yellow-700">
+                                <strong>{warning.item_name}:</strong> Need {warning.needed.toFixed(2)} {warning.unit}, only {warning.available.toFixed(2)} {warning.unit} available
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
-                    {item.description && (
-                      <p className="text-sm text-gray-600 line-clamp-2">{item.description}</p>
-                    )}
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}

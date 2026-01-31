@@ -70,7 +70,16 @@ export default function NewInventoryPage() {
     setLoading(true);
 
     try {
-      const { error: insertError } = await supabase
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase
+        .from('users')
+        .select('username')
+        .eq('id', user?.id)
+        .single();
+
+      // Insert inventory item
+      const { data: newItem, error: insertError } = await supabase
         .from('inventory')
         .insert({
           item_name: formData.item_name.trim(),
@@ -78,7 +87,9 @@ export default function NewInventoryPage() {
           unit: formData.unit,
           minimum_threshold: parseFloat(formData.minimum_threshold),
           last_restocked: new Date().toISOString(),
-        });
+        })
+        .select()
+        .single();
 
       if (insertError) {
         // Check if it's a unique constraint violation
@@ -89,6 +100,23 @@ export default function NewInventoryPage() {
         }
         setLoading(false);
         return;
+      }
+
+      // Log the initial stock creation
+      if (newItem) {
+        await supabase
+          .from('inventory_logs')
+          .insert({
+            inventory_item_id: newItem.id,
+            item_name: newItem.item_name,
+            operation_type: 'initial',
+            quantity_change: parseFloat(formData.quantity),
+            quantity_before: 0,
+            quantity_after: parseFloat(formData.quantity),
+            user_id: user?.id || null,
+            user_name: userData?.username || null,
+            notes: `Initial stock creation: ${newItem.item_name}`
+          });
       }
 
       // Success - redirect to inventory page

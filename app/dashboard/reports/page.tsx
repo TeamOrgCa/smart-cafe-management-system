@@ -1,9 +1,34 @@
 import { requireAdmin } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
+import Link from 'next/link';
 
 export default async function ReportsPage() {
   await requireAdmin();
   const supabase = await createClient();
+
+  // Fetch all completed orders with items
+  const { data: completedOrders } = await supabase
+    .from('orders')
+    .select(`
+      *,
+      order_items (
+        id,
+        quantity,
+        price,
+        menu_items (
+          id,
+          name,
+          category
+        )
+      )
+    `)
+    .eq('status', 'completed')
+    .order('created_at', { ascending: false });
+
+  // Fetch all orders for cancelled count
+  const { data: allOrders } = await supabase
+    .from('orders')
+    .select('id, status, created_at, total_amount')
 
   // Get today's date range
   const today = new Date();
@@ -11,165 +36,248 @@ export default async function ReportsPage() {
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
 
-  // Fetch today's completed orders only
-  const { data: todayOrders } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('status', 'completed')
-    .gte('created_at', today.toISOString())
-    .lt('created_at', tomorrow.toISOString());
+  // Calculate today's metrics
+  const todayOrders = completedOrders?.filter(order => {
+    const orderDate = new Date(order.created_at);
+    return orderDate >= today && orderDate < tomorrow;
+  }) || [];
+  
+  const todayRevenue = todayOrders.reduce((sum, order) => sum + order.total_amount, 0);
+  const todayOrderCount = todayOrders.length;
 
-  // Fetch all completed orders for total revenue
-  const { data: completedOrders } = await supabase
-    .from('orders')
-    .select('total_amount')
-    .eq('status', 'completed');
+  // Calculate KPIs
+  const totalRevenue = completedOrders?.reduce((sum, order) => sum + order.total_amount, 0) || 0;
+  const totalOrders = completedOrders?.length || 0;
+  const cancelledOrders = allOrders?.filter(o => o.status === 'cancelled').length || 0;
+  const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
 
-  const todayRevenue =
-    todayOrders?.reduce((sum, order) => sum + order.total_amount, 0) || 0;
-  const totalRevenue =
-    completedOrders?.reduce((sum, order) => sum + order.total_amount, 0) || 0;
-  const todayOrderCount = todayOrders?.length || 0;
+  // Sales by Payment Method
+  const paymentStats = completedOrders?.reduce((acc, order) => {
+    const method = order.payment_method || 'Not Specified';
+    if (!acc[method]) {
+      acc[method] = { count: 0, revenue: 0 };
+    }
+    acc[method].count += 1;
+    acc[method].revenue += order.total_amount;
+    return acc;
+  }, {} as Record<string, { count: number; revenue: number }>);
 
-  // Get top selling items
-  const { data: topItems } = await supabase
-    .from('order_items')
-    .select(
-      `
-      menu_item_id,
-      quantity,
-      menu_items (name, price)
-    `
-    )
-    .limit(10);
+  // Sales by Category
+  const categoryStats = completedOrders?.reduce((acc, order) => {
+    order.order_items?.forEach((item: any) => {
+      const category = item.menu_items?.category || 'Other';
+      if (!acc[category]) {
+        acc[category] = { quantity: 0, revenue: 0 };
+      }
+      acc[category].quantity += item.quantity;
+      acc[category].revenue += item.price * item.quantity;
+    });
+    return acc;
+  }, {} as Record<string, { quantity: number; revenue: number }>);
+
+  // Top Selling Items
+  const itemStats = completedOrders?.reduce((acc, order) => {
+    order.order_items?.forEach((item: any) => {
+      const itemName = item.menu_items?.name || 'Unknown';
+      const itemId = item.menu_items?.id;
+      if (itemId) {
+        if (!acc[itemId]) {
+          acc[itemId] = { name: itemName, quantity: 0, revenue: 0 };
+        }
+        acc[itemId].quantity += item.quantity;
+        acc[itemId].revenue += item.price * item.quantity;
+      }
+    });
+    return acc;
+  }, {} as Record<string, { name: string; quantity: number; revenue: number }>);
+
+  const topItems = Object.values(itemStats || {})
+    .sort((a: any, b: any) => b.quantity - a.quantity)
+    .slice(0, 5);
+
+  // Peak Hours Analysis
+  const hourlyStats = completedOrders?.reduce((acc, order) => {
+    const hour = new Date(order.created_at).getHours();
+    if (!acc[hour]) {
+      acc[hour] = { count: 0, revenue: 0 };
+    }
+    acc[hour].count += 1;
+    acc[hour].revenue += order.total_amount;
+    return acc;
+  }, {} as Record<number, { count: number; revenue: number }>);
+
+  const peakHours = Object.entries(hourlyStats || {})
+    .sort(([, a]: any, [, b]: any) => b.count - a.count)
+    .slice(0, 5)
+    .map(([hour, stats]: any) => ({
+      hour: `${hour}:00 - ${hour}:59`,
+      orders: stats.count,
+      revenue: stats.revenue
+    }));
+
 
   return (
-    <div className="p-4 sm:p-8 lg:p-12">
-      <div className="mb-6 sm:mb-8">
-        <h1 className="text-3xl sm:text-4xl font-bold text-forest mb-2">Sales Reports</h1>
-        <p className="text-olive text-sm sm:text-base">View performance metrics and analytics</p>
+    <div className="p-4 lg:p-6">
+      <div className="mb-6">
+        <h1 className="text-2xl lg:text-3xl font-bold text-forest-900 mb-2">📊 Sales Reports & Analytics</h1>
+        <p className="text-sm lg:text-base text-forest-600">Key performance indicators and business insights</p>
       </div>
 
-      <main>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
-          {/* Today's Revenue */}
-          <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h3 className="text-olive text-xs sm:text-sm font-medium mb-2">Today's Revenue</h3>
-            <p className="text-2xl sm:text-4xl font-bold text-forest">₱{todayRevenue.toFixed(2)}</p>
-          </div>
-
-          {/* Total Revenue */}
-          <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h3 className="text-olive text-xs sm:text-sm font-medium mb-2">Total Revenue</h3>
-            <p className="text-2xl sm:text-4xl font-bold text-forest">₱{totalRevenue.toFixed(2)}</p>
-          </div>
-
-          {/* Today's Orders */}
-          <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg sm:col-span-2 md:col-span-1">
-            <h3 className="text-olive text-xs sm:text-sm font-medium mb-2">Today's Orders</h3>
-            <p className="text-2xl sm:text-4xl font-bold text-forest">{todayOrderCount}</p>
-          </div>
+      {/* KPI Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Today's Revenue</p>
+          <p className="text-2xl lg:text-3xl font-bold text-green-600">₱{todayRevenue.toFixed(2)}</p>
+          <p className="text-xs text-gray-500 mt-1">From today's orders</p>
         </div>
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Today's Orders</p>
+          <p className="text-2xl lg:text-3xl font-bold text-blue-600">{todayOrderCount}</p>
+          <p className="text-xs text-gray-500 mt-1">Completed today</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Average Order Value</p>
+          <p className="text-2xl lg:text-3xl font-bold text-purple-600">₱{averageOrderValue.toFixed(2)}</p>
+          <p className="text-xs text-gray-500 mt-1">Per completed order</p>
+        </div>
+      </div>
 
-        {/* Recent Orders - Desktop Table */}
-        <div className="hidden md:block bg-white rounded-lg shadow-lg overflow-hidden mb-6 sm:mb-8">
-          <div className="bg-forest text-white px-4 sm:px-6 py-3 sm:py-4">
-            <h2 className="text-lg sm:text-xl font-semibold">Recent Orders</h2>
-          </div>
-          <div className="p-4 sm:p-6">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b">
-                    <th className="px-4 py-2 text-left text-forest">Order #</th>
-                    <th className="px-4 py-2 text-left text-forest">Customer</th>
-                    <th className="px-4 py-2 text-left text-forest">Amount</th>
-                    <th className="px-4 py-2 text-left text-forest">Status</th>
-                    <th className="px-4 py-2 text-left text-forest">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {todayOrders && todayOrders.length > 0 ? (
-                    todayOrders.slice(0, 10).map((order) => (
-                      <tr key={order.id} className="border-b hover:bg-beige">
-                        <td className="px-4 py-3">{order.order_number}</td>
-                        <td className="px-4 py-3">{order.customer_name || 'Walk-in'}</td>
-                        <td className="px-4 py-3">₱{order.total_amount.toFixed(2)}</td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`px-2 py-1 rounded-full text-xs ${
-                              order.status === 'completed'
-                                ? 'bg-green-100 text-green-800'
-                                : order.status === 'pending'
-                                ? 'bg-cream text-forest'
-                                : 'bg-red-100 text-red-800'
-                            }`}
-                          >
-                            {order.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          {new Date(order.created_at).toLocaleTimeString()}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-olive">
-                        No orders today yet
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+      {/* Secondary Metrics */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Total Revenue</p>
+          <p className="text-2xl lg:text-3xl font-bold text-green-700">₱{totalRevenue.toFixed(2)}</p>
+          <p className="text-xs text-gray-500 mt-1">All-time completed</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Total Orders</p>
+          <p className="text-2xl lg:text-3xl font-bold text-forest-900">{totalOrders}</p>
+          <p className="text-xs text-gray-500 mt-1">All-time completed</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Cancelled Orders</p>
+          <p className="text-2xl lg:text-3xl font-bold text-red-600">{cancelledOrders}</p>
+          <p className="text-xs text-gray-500 mt-1">Voided transactions</p>
+        </div>
+      </div>
+
+      {/* Sales by Payment Method */}
+      <div className="bg-white rounded-lg shadow mb-6">
+        <div className="bg-forest-900 text-white px-4 lg:px-6 py-3 lg:py-4 rounded-t-lg">
+          <h2 className="text-lg lg:text-xl font-semibold text-black">💳 Sales by Payment Method</h2>
+        </div>
+        <div className="p-4 lg:p-6">
+          {paymentStats && Object.keys(paymentStats).length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {Object.entries(paymentStats).map(([method, stats]: any) => (
+                <div key={method} className="border border-gray-200 rounded-lg p-4">
+                  <div className="text-sm text-gray-600 mb-1">{method}</div>
+                  <div className="text-xl font-bold text-forest-900">₱{stats.revenue.toFixed(2)}</div>
+                  <div className="text-xs text-gray-500">{stats.count} orders</div>
+                </div>
+              ))}
             </div>
-          </div>
+          ) : (
+            <p className="text-gray-500">No payment data available</p>
+          )}
         </div>
+      </div>
 
-        {/* Recent Orders - Mobile Cards */}
-        <div className="md:hidden mb-6 sm:mb-8">
-          <div className="bg-forest text-white px-4 py-3 rounded-t-lg">
-            <h2 className="text-lg font-semibold">Recent Orders</h2>
-          </div>
-          <div className="space-y-3 bg-white rounded-b-lg p-4">
-            {todayOrders && todayOrders.length > 0 ? (
-              todayOrders.slice(0, 10).map((order) => (
-                <div key={order.id} className="border border-gray-200 rounded-lg p-3">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <div className="font-bold text-forest">{order.order_number}</div>
-                      <div className="text-sm text-olive">{order.customer_name || 'Walk-in'}</div>
+      {/* Sales by Category */}
+      <div className="bg-white rounded-lg shadow mb-6">
+        <div className="bg-forest-900 text-white px-4 lg:px-6 py-3 lg:py-4 rounded-t-lg">
+          <h2 className="text-lg lg:text-xl text-black font-semibold">🍽️ Sales by Category</h2>
+        </div>
+        <div className="p-4 lg:p-6">
+          {categoryStats && Object.keys(categoryStats).length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {Object.entries(categoryStats)
+                .sort(([, a]: any, [, b]: any) => b.revenue - a.revenue)
+                .map(([category, stats]: any) => (
+                  <div key={category} className="border border-gray-200 rounded-lg p-4">
+                    <div className="text-sm text-gray-600 mb-1">{category}</div>
+                    <div className="text-xl font-bold text-forest-900">₱{stats.revenue.toFixed(2)}</div>
+                    <div className="text-xs text-gray-500">{stats.quantity} items sold</div>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <p className="text-gray-500">No category data available</p>
+          )}
+        </div>
+      </div>
+
+      {/* Top Selling Items */}
+      <div className="bg-white rounded-lg shadow mb-6">
+        <div className="bg-forest-900 text-white px-4 lg:px-6 py-3 lg:py-4 rounded-t-lg">
+          <h2 className="text-lg lg:text-xl font-semibold text-black">🏆 Top Selling Items</h2>
+        </div>
+        <div className="p-4 lg:p-6">
+          {topItems && topItems.length > 0 ? (
+            <div className="space-y-3">
+              {topItems.map((item: any, index) => (
+                <div key={index} className="flex items-center justify-between border-b border-gray-200 pb-3 last:border-0">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-forest-900 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
+                      {index + 1}
                     </div>
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs ${
-                        order.status === 'completed'
-                          ? 'bg-green-100 text-green-800'
-                          : order.status === 'pending'
-                          ? 'bg-cream text-forest'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
-                      {order.status}
-                    </span>
+                    <div>
+                      <div className="font-semibold text-forest-900">{item.name}</div>
+                      <div className="text-xs text-gray-500">{item.quantity} sold</div>
+                    </div>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Amount:</span>
-                    <span className="font-bold text-forest">₱{order.total_amount.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Time:</span>
-                    <span className="text-gray-700">{new Date(order.created_at).toLocaleTimeString()}</span>
+                  <div className="text-right">
+                    <div className="font-bold text-forest-900">₱{item.revenue.toFixed(2)}</div>
+                    <div className="text-xs text-gray-500">revenue</div>
                   </div>
                 </div>
-              ))
-            ) : (
-              <div className="py-8 text-center text-olive">
-                No orders today yet
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500">No sales data available</p>
+          )}
         </div>
-      </main>
+      </div>
+
+      {/* Peak Hours */}
+      <div className="bg-white rounded-lg shadow mb-6">
+        <div className="bg-forest-900 text-white px-4 lg:px-6 py-3 lg:py-4 rounded-t-lg">
+          <h2 className="text-lg lg:text-xl font-semibold text-black">⏰ Peak Hours</h2>
+        </div>
+        <div className="p-4 lg:p-6">
+          {peakHours && peakHours.length > 0 ? (
+            <div className="space-y-3">
+              {peakHours.map((slot, index) => (
+                <div key={index} className="flex items-center justify-between border-b border-gray-200 pb-3 last:border-0">
+                  <div>
+                    <div className="font-semibold text-forest-900">{slot.hour}</div>
+                    <div className="text-xs text-gray-500">{slot.orders} orders</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-bold text-forest-900">₱{slot.revenue.toFixed(2)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500">No hourly data available</p>
+          )}
+        </div>
+      </div>
+
+      {/* Link to Transaction History */}
+      <div className="bg-cream border border-forest-300 rounded-lg p-4 lg:p-6">
+        <h3 className="text-lg font-semibold text-forest-900 mb-2">📜 View Detailed Transactions</h3>
+        <p className="text-sm text-forest-600 mb-4">
+          Need to see individual order details? Access the complete audit trail with search and filters.
+        </p>
+        <Link
+          href="/dashboard/transactions"
+          className="inline-block bg-forest-900 text-white px-6 py-2 rounded-lg hover:bg-forest-800 transition-colors"
+        >
+          Go to Transaction History
+        </Link>
+      </div>
     </div>
   );
 }
