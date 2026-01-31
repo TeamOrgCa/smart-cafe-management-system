@@ -28,7 +28,22 @@ export default async function ReportsPage() {
   // Fetch all orders for cancelled count
   const { data: allOrders } = await supabase
     .from('orders')
-    .select('id, status')
+    .select('id, status, created_at, total_amount')
+
+  // Get today's date range
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  // Calculate today's metrics
+  const todayOrders = completedOrders?.filter(order => {
+    const orderDate = new Date(order.created_at);
+    return orderDate >= today && orderDate < tomorrow;
+  }) || [];
+  
+  const todayRevenue = todayOrders.reduce((sum, order) => sum + order.total_amount, 0);
+  const todayOrderCount = todayOrders.length;
 
   // Calculate KPIs
   const totalRevenue = completedOrders?.reduce((sum, order) => sum + order.total_amount, 0) || 0;
@@ -109,21 +124,35 @@ export default async function ReportsPage() {
       </div>
 
       {/* KPI Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Today's Revenue</p>
+          <p className="text-2xl lg:text-3xl font-bold text-green-600">₱{todayRevenue.toFixed(2)}</p>
+          <p className="text-xs text-gray-500 mt-1">From today's orders</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Today's Orders</p>
+          <p className="text-2xl lg:text-3xl font-bold text-blue-600">{todayOrderCount}</p>
+          <p className="text-xs text-gray-500 mt-1">Completed today</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
+          <p className="text-xs lg:text-sm text-forest-600 mb-1">Average Order Value</p>
+          <p className="text-2xl lg:text-3xl font-bold text-purple-600">₱{averageOrderValue.toFixed(2)}</p>
+          <p className="text-xs text-gray-500 mt-1">Per completed order</p>
+        </div>
+      </div>
+
+      {/* Secondary Metrics */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-lg shadow p-4 lg:p-6">
           <p className="text-xs lg:text-sm text-forest-600 mb-1">Total Revenue</p>
-          <p className="text-2xl lg:text-3xl font-bold text-green-600">₱{totalRevenue.toFixed(2)}</p>
-          <p className="text-xs text-gray-500 mt-1">From completed orders</p>
+          <p className="text-2xl lg:text-3xl font-bold text-green-700">₱{totalRevenue.toFixed(2)}</p>
+          <p className="text-xs text-gray-500 mt-1">All-time completed</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4 lg:p-6">
           <p className="text-xs lg:text-sm text-forest-600 mb-1">Total Orders</p>
           <p className="text-2xl lg:text-3xl font-bold text-forest-900">{totalOrders}</p>
-          <p className="text-xs text-gray-500 mt-1">Successfully completed</p>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4 lg:p-6">
-          <p className="text-xs lg:text-sm text-forest-600 mb-1">Average Order Value</p>
-          <p className="text-2xl lg:text-3xl font-bold text-blue-600">₱{averageOrderValue.toFixed(2)}</p>
-          <p className="text-xs text-gray-500 mt-1">Per completed order</p>
+          <p className="text-xs text-gray-500 mt-1">All-time completed</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4 lg:p-6">
           <p className="text-xs lg:text-sm text-forest-600 mb-1">Cancelled Orders</p>

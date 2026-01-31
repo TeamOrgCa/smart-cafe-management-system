@@ -13,6 +13,15 @@ interface MenuItem {
   category: string;
   image_url: string | null;
   is_available: boolean;
+  menu_item_ingredients?: Array<{
+    inventory_item_id: string;
+    quantity_needed: number;
+    inventory: {
+      item_name: string;
+      quantity: number;
+      unit: string;
+    };
+  }>;
 }
 
 interface CartItem {
@@ -20,6 +29,13 @@ interface CartItem {
   name: string;
   price: number;
   quantity: number;
+}
+
+interface StockWarning {
+  item_name: string;
+  available: number;
+  needed: number;
+  unit: string;
 }
 
 export default function CustomerOrderPage() {
@@ -30,6 +46,7 @@ export default function CustomerOrderPage() {
   const [showCart, setShowCart] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [orderNumber, setOrderNumber] = useState('');
+  const [stockWarnings, setStockWarnings] = useState<Record<string, StockWarning[]>>({});
 
   useEffect(() => {
     fetchMenuItems();
@@ -38,16 +55,73 @@ export default function CustomerOrderPage() {
   const fetchMenuItems = async () => {
     const { data } = await supabase
       .from('menu_items')
-      .select('*')
+      .select(`
+        *,
+        menu_item_ingredients (
+          inventory_item_id,
+          quantity_needed,
+          inventory (
+            item_name,
+            quantity,
+            unit
+          )
+        )
+      `)
       .eq('is_available', true)
       .order('category', { ascending: true });
 
     if (data) setMenuItems(data);
   };
 
+  // Check if menu item has sufficient stock
+  const checkStock = (item: MenuItem, requestedQuantity: number): StockWarning[] => {
+    const warnings: StockWarning[] = [];
+    
+    if (!item.menu_item_ingredients || item.menu_item_ingredients.length === 0) {
+      return warnings;
+    }
+
+    item.menu_item_ingredients.forEach((ingredient) => {
+      const needed = ingredient.quantity_needed * requestedQuantity;
+      const available = ingredient.inventory.quantity;
+      
+      if (available < needed) {
+        warnings.push({
+          item_name: ingredient.inventory.item_name,
+          available,
+          needed,
+          unit: ingredient.inventory.unit
+        });
+      }
+    });
+
+    return warnings;
+  };
+
+  // Check if menu item is out of stock (any ingredient is 0)
+  const isOutOfStock = (item: MenuItem): boolean => {
+    if (!item.menu_item_ingredients || item.menu_item_ingredients.length === 0) {
+      return false;
+    }
+
+    return item.menu_item_ingredients.some(
+      (ingredient) => ingredient.inventory.quantity === 0
+    );
+  };
+
   const addToCart = (item: MenuItem) => {
     const existingItem = cart.find(ci => ci.menu_item_id === item.id);
+    const newQuantity = existingItem ? existingItem.quantity + 1 : 1;
     
+    // Check stock availability BEFORE adding
+    const warnings = checkStock(item, newQuantity);
+    
+    if (warnings.length > 0) {
+      setStockWarnings({ ...stockWarnings, [item.id]: warnings });
+      return; // Don't add to cart if stock insufficient
+    }
+
+    // Only update cart if stock check passes
     if (existingItem) {
       setCart(cart.map(ci =>
         ci.menu_item_id === item.id
@@ -62,13 +136,39 @@ export default function CustomerOrderPage() {
         quantity: 1,
       }]);
     }
+    
+    // Clear warnings for this item only if successfully added
+    const newWarnings = { ...stockWarnings };
+    delete newWarnings[item.id];
+    setStockWarnings(newWarnings);
+    
     setShowCart(true);
   };
 
   const updateQuantity = (menu_item_id: string, quantity: number) => {
     if (quantity <= 0) {
       setCart(cart.filter(ci => ci.menu_item_id !== menu_item_id));
+      // Clear warnings
+      const newWarnings = { ...stockWarnings };
+      delete newWarnings[menu_item_id];
+      setStockWarnings(newWarnings);
     } else {
+      // Find menu item and check stock
+      const menuItem = menuItems.find(mi => mi.id === menu_item_id);
+      if (menuItem) {
+        const warnings = checkStock(menuItem, quantity);
+        
+        if (warnings.length > 0) {
+          setStockWarnings({ ...stockWarnings, [menu_item_id]: warnings });
+          return;
+        } else {
+          // Clear warnings for this item
+          const newWarnings = { ...stockWarnings };
+          delete newWarnings[menu_item_id];
+          setStockWarnings(newWarnings);
+        }
+      }
+      
       setCart(cart.map(ci =>
         ci.menu_item_id === menu_item_id ? { ...ci, quantity } : ci
       ));
@@ -162,46 +262,77 @@ export default function CustomerOrderPage() {
                       {category}
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {items.map((item) => (
-                        <div
-                          key={item.id}
-                          className="bg-white rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow"
-                        >
-                          <div className="relative h-32 bg-linear-to-br from-olive/20 to-forest/20">
-                            {item.image_url ? (
-                              <img
-                                src={item.image_url}
-                                alt={item.name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="absolute inset-0 flex items-center justify-center text-4xl">
-                                {category === 'Coffee' && '☕'}
-                                {category === 'Tea' && '🍵'}
-                                {category === 'Pastries' && '🥐'}
-                                {category === 'Sandwiches' && '🥪'}
-                                {category === 'Desserts' && '🍰'}
-                                {!['Coffee', 'Tea', 'Pastries', 'Sandwiches', 'Desserts'].includes(category) && '🍽️'}
+                      {items.map((item) => {
+                        const outOfStock = isOutOfStock(item);
+                        const warnings = stockWarnings[item.id] || [];
+                        
+                        return (
+                          <div
+                            key={item.id}
+                            className={`bg-white rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow ${
+                              outOfStock ? 'opacity-60' : ''
+                            }`}
+                          >
+                            <div className="relative h-32 bg-linear-to-br from-olive/20 to-forest/20">
+                              {outOfStock && (
+                                <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10">
+                                  <span className="bg-red-600 text-white px-4 py-2 rounded-lg font-bold">
+                                    OUT OF STOCK
+                                  </span>
+                                </div>
+                              )}
+                              {item.image_url ? (
+                                <img
+                                  src={item.image_url}
+                                  alt={item.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="absolute inset-0 flex items-center justify-center text-4xl">
+                                  {category === 'Coffee' && '☕'}
+                                  {category === 'Tea' && '🍵'}
+                                  {category === 'Pastries' && '🥐'}
+                                  {category === 'Sandwiches' && '🥪'}
+                                  {category === 'Desserts' && '🍰'}
+                                  {!['Coffee', 'Tea', 'Pastries', 'Sandwiches', 'Desserts'].includes(category) && '🍽️'}
+                                </div>
+                              )}
+                            </div>
+                            <div className="p-4">
+                              <h4 className="font-semibold text-forest mb-1">{item.name}</h4>
+                              {item.description && (
+                                <p className="text-sm text-gray-600 mb-3 line-clamp-2">{item.description}</p>
+                              )}
+                              
+                              {/* Stock Warning */}
+                              {warnings.length > 0 && (
+                                <div className="mb-3 p-2 bg-orange-50 border border-orange-200 rounded text-xs">
+                                  <p className="font-semibold text-orange-800 mb-1">⚠️ Insufficient Ingredients</p>
+                                  <p className="text-orange-700">
+                                    Not enough stock to fulfill this quantity.
+                                  </p>
+                                  <p className="text-orange-800 font-medium mt-1">Please reduce quantity or select another item</p>
+                                </div>
+                              )}
+                              
+                              <div className="flex justify-between items-center">
+                                <span className="text-xl font-bold text-forest">₱{item.price.toFixed(2)}</span>
+                                <button
+                                  onClick={() => addToCart(item)}
+                                  disabled={outOfStock}
+                                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                    outOfStock
+                                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                      : 'bg-forest text-white hover:bg-olive'
+                                  }`}
+                                >
+                                  {outOfStock ? 'Unavailable' : 'Add to Cart'}
+                                </button>
                               </div>
-                            )}
-                          </div>
-                          <div className="p-4">
-                            <h4 className="font-semibold text-forest mb-1">{item.name}</h4>
-                            {item.description && (
-                              <p className="text-sm text-gray-600 mb-3 line-clamp-2">{item.description}</p>
-                            )}
-                            <div className="flex justify-between items-center">
-                              <span className="text-xl font-bold text-forest">₱{item.price.toFixed(2)}</span>
-                              <button
-                                onClick={() => addToCart(item)}
-                                className="bg-forest text-white px-4 py-2 rounded-lg hover:bg-olive transition-colors text-sm font-medium"
-                              >
-                                Add to Cart
-                              </button>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -221,6 +352,7 @@ export default function CustomerOrderPage() {
                   setOrderSuccess={setOrderSuccess}
                   setOrderNumber={setOrderNumber}
                   setCart={setCart}
+                  stockWarnings={stockWarnings}
                 />
               </div>
             </div>
@@ -244,6 +376,7 @@ export default function CustomerOrderPage() {
                 setOrderSuccess={setOrderSuccess}
                 setOrderNumber={setOrderNumber}
                 setCart={setCart}
+                stockWarnings={stockWarnings}
                 onSuccess={() => setShowCart(false)}
               />
             </div>
@@ -263,6 +396,7 @@ function CartContent({
   setOrderSuccess,
   setOrderNumber,
   setCart,
+  stockWarnings,
   onSuccess,
 }: {
   cart: CartItem[];
@@ -273,11 +407,54 @@ function CartContent({
   setOrderSuccess: (success: boolean) => void;
   setOrderNumber: (orderNum: string) => void;
   setCart: (cart: CartItem[]) => void;
+  stockWarnings: Record<string, StockWarning[]>;
   onSuccess?: () => void;
 }) {
   const supabase = createClient();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  
+  const hasStockIssues = Object.keys(stockWarnings).length > 0;
+
+  useEffect(() => {
+    fetchMenuItems();
+  }, []);
+
+  const fetchMenuItems = async () => {
+    const { data } = await supabase
+      .from('menu_items')
+      .select(`
+        *,
+        menu_item_ingredients (
+          inventory_item_id,
+          quantity_needed,
+          inventory (
+            item_name,
+            quantity,
+            unit
+          )
+        )
+      `)
+      .eq('is_available', true);
+
+    if (data) setMenuItems(data);
+  };
+
+  // Check if increasing quantity would exceed stock
+  const canIncreaseQuantity = (menu_item_id: string, currentQuantity: number): boolean => {
+    const menuItem = menuItems.find(mi => mi.id === menu_item_id);
+    if (!menuItem || !menuItem.menu_item_ingredients || menuItem.menu_item_ingredients.length === 0) {
+      return true;
+    }
+
+    const newQuantity = currentQuantity + 1;
+    return !menuItem.menu_item_ingredients.some((ingredient) => {
+      const needed = ingredient.quantity_needed * newQuantity;
+      const available = ingredient.inventory.quantity;
+      return available < needed;
+    });
+  };
 
   const handlePlaceOrder = async () => {
     if (cart.length === 0) {
@@ -287,6 +464,11 @@ function CartContent({
 
     if (!customerName.trim()) {
       setError('Please enter your name');
+      return;
+    }
+    
+    if (hasStockIssues) {
+      setError('Please resolve stock issues before placing order');
       return;
     }
 
@@ -368,29 +550,51 @@ function CartContent({
           <p className="text-center text-olive py-8">Your cart is empty</p>
         ) : (
           <div className="space-y-3">
-            {cart.map((item) => (
-              <div key={item.menu_item_id} className="flex items-center gap-2">
-                <div className="flex-1">
-                  <p className="font-medium text-sm">{item.name}</p>
-                  <p className="text-xs text-olive">₱{item.price.toFixed(2)} each</p>
+            {cart.map((item) => {
+              const itemWarnings = stockWarnings[item.menu_item_id] || [];
+              const canIncrease = canIncreaseQuantity(item.menu_item_id, item.quantity);
+              
+              return (
+                <div key={item.menu_item_id}>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <p className="font-medium text-sm">{item.name}</p>
+                      <p className="text-xs text-olive">₱{item.price.toFixed(2)} each</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => updateQuantity(item.menu_item_id, item.quantity - 1)}
+                        className="w-7 h-7 bg-gray-200 rounded hover:bg-gray-300 text-forest font-bold"
+                      >
+                        -
+                      </button>
+                      <span className="w-8 text-center font-medium">{item.quantity}</span>
+                      <button
+                        onClick={() => updateQuantity(item.menu_item_id, item.quantity + 1)}
+                        disabled={!canIncrease}
+                        className={`w-7 h-7 rounded font-bold ${
+                          canIncrease
+                            ? 'bg-forest text-white hover:bg-olive'
+                            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Cart Item Stock Warning */}
+                  {itemWarnings.length > 0 && (
+                    <div className="mt-2 p-2 bg-orange-50 border border-orange-200 rounded text-xs">
+                      <p className="font-semibold text-orange-800">⚠️ Insufficient Ingredients</p>
+                      <p className="text-orange-700">
+                        Not enough stock available. Please reduce quantity.
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => updateQuantity(item.menu_item_id, item.quantity - 1)}
-                    className="w-7 h-7 bg-gray-200 rounded hover:bg-gray-300 text-forest font-bold"
-                  >
-                    -
-                  </button>
-                  <span className="w-8 text-center font-medium">{item.quantity}</span>
-                  <button
-                    onClick={() => updateQuantity(item.menu_item_id, item.quantity + 1)}
-                    className="w-7 h-7 bg-forest text-white rounded hover:bg-olive font-bold"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -410,10 +614,14 @@ function CartContent({
 
       <button
         onClick={handlePlaceOrder}
-        disabled={loading || cart.length === 0}
-        className="w-full bg-forest text-white px-6 py-3 rounded-lg hover:bg-olive transition-colors disabled:opacity-50 font-medium"
+        disabled={loading || cart.length === 0 || hasStockIssues}
+        className={`w-full px-6 py-3 rounded-lg transition-colors font-medium ${
+          hasStockIssues
+            ? 'bg-gray-400 text-gray-600 cursor-not-allowed'
+            : 'bg-forest text-white hover:bg-olive disabled:opacity-50'
+        }`}
       >
-        {loading ? 'Placing Order...' : 'Place Order'}
+        {loading ? 'Placing Order...' : hasStockIssues ? 'Resolve Stock Issues' : 'Place Order'}
       </button>
       <p className="text-xs text-gray-500 text-center mt-2">
         Pay at the counter after placing your order
